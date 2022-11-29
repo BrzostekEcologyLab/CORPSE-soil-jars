@@ -116,8 +116,7 @@ decompRate <- function(SOM, T, theta, params){
 }
 
 
-
-CORPSE_lidet <- function(SOM,T,theta,params,claymod=1.0) {
+CORPSE_decomp <- function(SOM,T,theta,params,claymod=1.0) {
   ##Calculate maximum potential C decomposition rate
   decomp<-decompRate(SOM,T,theta,params)
 
@@ -140,43 +139,53 @@ CORPSE_lidet <- function(SOM,T,theta,params,claymod=1.0) {
     carbon_supply<-carbon_supply+decomp[[paste(ctypes,'C',sep='')]]*params[[paste('eup',ctypes,sep='_')]]
     nitrogen_supply<-nitrogen_supply+decomp[[paste(ctypes,'N',sep='')]]*params[[paste('nup',ctypes,sep='_')]]
   }
-  
 
   IMM_N_max <- params$max_immobilization_rate*365*SOM$inorganicN/(SOM$inorganicN+params$max_immobilization_rate)
-
+  
   dmicrobeC <- vector(mode='numeric', length=nspp)
   dmicrobeN <- vector(mode='numeric', length=nspp)
   CN_imbalance_term <- vector(mode='numeric', length=nspp)
 
   ##Growth is nitrogen limited, with not enough mineral N to support it with max immobilization
-  loc_Nlim <- (carbon_supply - maintenance_resp)>((nitrogen_supply + IMM_N_max) * params$CN_Microbe)
+  ##Model isn't able to do multiple true/false runs at the same time, so localized N limitation, N immonbilization, or C limitation is
+  ##individually calculated for each litter type. 
+  
+  for (j in 1:length(nspp)){##runs each litter type 
+    ##1. Determine if loc_Nlim is true: 
+  loc_Nlim <- (carbon_supply[j] - maintenance_resp[j] )>((nitrogen_supply[j]  + IMM_N_max[j] ) * params$CN_Microbe[j] )
+    ##If true, record data
+  if(loc_Nlim==TRUE){
+  CN_imbalance_term[j] <- (-IMM_N_max[j])
 
-  CN_imbalance_term[loc_Nlim] <- (-IMM_N_max[loc_Nlim])
+  dmicrobeC[j] <- ((nitrogen_supply[j] + IMM_N_max[j]) * params$CN_Microbe[j] - microbeTurnover[j] * params$et[j])
 
-  dmicrobeC[loc_Nlim] <- ((nitrogen_supply[loc_Nlim] + IMM_N_max[loc_Nlim]) * params$CN_Microbe - microbeTurnover[loc_Nlim] * params$et)
+  dmicrobeN[j] <- (nitrogen_supply[j] + IMM_N_max[j] - microbeTurnover[j] * params$et[j]/params$CN_Microbe[j])
 
-  dmicrobeN[loc_Nlim] <- (nitrogen_supply[loc_Nlim] + IMM_N_max[loc_Nlim] - microbeTurnover[loc_Nlim] * params$et/params$CN_Microbe)
-
-  overflow_resp[loc_Nlim] <- carbon_supply[loc_Nlim] - maintenance_resp[loc_Nlim] - (nitrogen_supply[loc_Nlim] + IMM_N_max[loc_Nlim]) * params$CN_Microbe
-
+  overflow_resp[j] <- carbon_supply[j] - maintenance_resp[j] - (nitrogen_supply[j] + IMM_N_max[j]) * params$CN_Microbe[j]
+}
   ##Growth must be supported by immobilization of some mineral nitrogen, but is ultimately carbon limited
-  loc_immob <- (carbon_supply - maintenance_resp >= nitrogen_supply*params$CN_Microbe) & (carbon_supply - maintenance_resp < (nitrogen_supply+IMM_N_max)*params$CN_Microbe)
+  ##2. Determine if loc_immob is true
+  loc_immob <- (carbon_supply[j] - maintenance_resp[j] >= nitrogen_supply[j]*params$CN_Microbe[j]) & (carbon_supply[j] - maintenance_resp[j] < (nitrogen_supply[j]+IMM_N_max[j])*params$CN_Microbe[j])
+  ##if true, record data
+  if(loc_immob==TRUE){
+  CN_imbalance_term[j] <- (-((carbon_supply[j] - maintenance_resp[j])/params$CN_Microbe[j] - nitrogen_supply[j]))
+  
+  dmicrobeC[j] <- (carbon_supply[j] - microbeTurnover[j])
 
-  CN_imbalance_term[loc_immob] <- (-((carbon_supply[loc_immob] - maintenance_resp[loc_immob])/params$CN_Microbe - nitrogen_supply[loc_immob]))
-
-  dmicrobeC[loc_immob] <- (carbon_supply[loc_immob] - microbeTurnover[loc_immob])
-
-  dmicrobeN[loc_immob] <- ((carbon_supply[loc_immob]-maintenance_resp[loc_immob])/params$CN_Microbe - microbeTurnover[loc_immob]*params$et/params$CN_Microbe)
-
+  dmicrobeN[j] <- ((carbon_supply[j]-maintenance_resp[j])/params$CN_Microbe[j] - microbeTurnover[j]*params$et[j]/params$CN_Microbe[j])
+}
   ##Growth is carbon limited and extra N is mineralized
+  ##determine if loc_Clim is true
   loc_Clim <- !(loc_Nlim | loc_immob)
+  ##if true,record data
+ if(loc_Clim==TRUE){
+  dmicrobeC[j] <- (carbon_supply[j] - microbeTurnover[j])
 
-  dmicrobeC[loc_Clim] <- (carbon_supply[loc_Clim] - microbeTurnover[loc_Clim])
+  dmicrobeN[j] <- ((carbon_supply[j] - maintenance_resp[j])/params$CN_Microbe[j] - microbeTurnover[j]*params$et[j]/params$CN_Microbe[j])
 
-  dmicrobeN[loc_Clim] <- ((carbon_supply[loc_Clim] - maintenance_resp[loc_Clim])/params$CN_Microbe - microbeTurnover[loc_Clim]*params$et/params$CN_Microbe)
-
-  CN_imbalance_term[loc_Clim] <- nitrogen_supply[loc_Clim] - (carbon_supply[loc_Clim]-maintenance_resp[loc_Clim])/params$CN_Microbe;
-
+  CN_imbalance_term[j] <- nitrogen_supply[j] - (carbon_supply[j]-maintenance_resp[j])/params$CN_Microbe[j]
+}
+  }
   ##CO2 production and cumulative CO2 produced by cohort
   CO2prod <- maintenance_resp + overflow_resp
   for (ctypes in chem_types) {
@@ -320,7 +329,7 @@ CORPSE_lidet <- function(SOM,T,theta,params,claymod=1.0) {
   
   for (i in 1:timestep) {
     ##Start CORPSE model main loop
-    
+    print(i)
     #Parse step into DOY 
     ##this takes the timestep and makes it into DOY
     k<-(i%%365)
@@ -340,13 +349,13 @@ CORPSE_lidet <- function(SOM,T,theta,params,claymod=1.0) {
     # Litterbag layer
     litterbag$inorganicN <- shared_inorganicN
     
-    results_litterbag <- CORPSE_lidet(litterbag, T_step, theta_step, params, claymod) # units of kg change per year
+    results_litterbag <- CORPSE_decomp(litterbag, T_step, theta_step, params, claymod) # units of kg change per year
     
 
     # Bulk
     bulk$inorganicN <- shared_inorganicN
     
-    results_bulk <- CORPSE_lidet(bulk, T_step, theta_step, params_bulk, claymod) # units of kg change per year
+    results_bulk <- CORPSE_decomp(bulk, T_step, theta_step, params_bulk, claymod) # units of kg change per year
 
     ## Update the pools in SOM by add derivs*dt (length of time step) to each SOM pool.  
     ## This simply converts the units from mass per year to mass per the selected time step
